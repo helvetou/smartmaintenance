@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cours RAG — Technologies appliquées à la maintenance industrielle</title>
+<meta name="description" content="Cours : les technologies RAG (retrieval-augmented generation) appliquées aux 11 projets Helveticore.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="index.html">Helveticore <span>· smartmaintenance</span></a>
+    <nav>
+      <a href="index.html">Offre</a>
+      <a href="cours-rag.html">Cours RAG</a>
+    </nav>
+  </div>
+</header>
+<main class="wrap">
+<h1>Petit cours — Les technologies RAG appliquées à nos 11 projets</h1>
+<blockquote>
+<p>Support technique destiné à l'équipe et aux clients. Explique les briques du <strong>Retrieval-Augmented Generation (RAG)</strong> et leur usage dans chacun des 11 projets pilotes.</p>
+</blockquote>
+<h2>1. Pourquoi le RAG en maintenance industrielle ?</h2>
+<p>Les grands modèles de langage (LLM) savent rédiger, mais ils <strong>hallucinent</strong> quand on les interroge sur des faits précis, et ils ne connaissent ni vos procédures internes, ni vos schémas, ni votre historique GMAO. En maintenance GMP, une réponse approximative sur un couple de serrage, une purge ou une température de stérilisation est inacceptable.</p>
+<p>Le <strong>RAG</strong> résout ce problème : au lieu de laisser le modèle répondre de mémoire, on lui fournit, à chaque question, les <strong>documents pertinents</strong> récupérés dans un corpus maîtrisé, et on l'oblige à répondre <strong>en citant la source</strong>.</p>
+<p>Trois propriétés rendent le RAG indispensable pour nos cas d'usage :</p>
+<ol>
+<li><strong>Ancrage factuel</strong> : la réponse est fondée sur vos documents, pas sur la mémoire du modèle.</li>
+<li><strong>Citation &amp; traçabilité</strong> : chaque affirmation est rattachée à un paragraphe d'origine — exigence GMP et 21 CFR Part 11.</li>
+<li><strong>Souveraineté</strong> : le corpus et le modèle restent sur votre infrastructure, sans fuite vers des API publiques.</li>
+</ol>
+<h2>2. Anatomie d'un pipeline RAG</h2>
+<p>Un pipeline RAG se compose de <strong>deux phases</strong> : l'indexation (hors ligne) et la requête (en ligne).</p>
+<pre><code>Indexation (hors ligne) :
+  documents → parsing → chunking → embeddings → vector store (+ index BM25)
+
+Requête (en ligne) :
+  question → (réécriture) → retrieval hybride → reranking → contexte
+          → LLM + citation → réponse vérifiée
+</code></pre>
+<h3>2.1 Ingestion &amp; parsing</h3>
+<p>Les documents industriels sont hétérogènes : PDF scannés, tableaux techniques, P&amp;ID, manuels constructeurs, SOP. On extrait le texte par <strong>OCR haute précision</strong> et on préserve la structure (titres, sections, tableaux).</p>
+<ul>
+<li><strong>Piège</strong> : un OCR médiocre sur un paramètre critique (ex. « 121 °C » lu « 12,1 °C ») est dangereux. Le parsing doit être validé par un expert métier.</li>
+</ul>
+<h3>2.2 Chunking (découpage)</h3>
+<p>On découpe le document en segments sémantiques pour l'indexation. Stratégies :</p>
+<ul>
+<li><strong>Fixe</strong> (ex. 500 caractères) : simple, mais coupe les phrases.</li>
+<li><strong>Par section / sous-chapitre</strong> : préféré pour les SOP et manuels (découpage hiérarchique).</li>
+<li><strong>Avec chevauchement</strong> : évite de perdre le contexte aux frontières.</li>
+</ul>
+<p>Bon chunking = réponses précises. Un chunk trop grand dilue la pertinence ; trop petit casse le contexte.</p>
+<h3>2.3 Embeddings (vectorisation)</h3>
+<p>Chaque chunk est converti en un <strong>vecteur numérique</strong> qui capture son sens. Deux textes proches ont des vecteurs proches (similarité cosinus).</p>
+<ul>
+<li><strong>Modèles</strong> : multilingual-e5, bge-m3 (bons en français/technique).</li>
+<li><strong>Usage transversal</strong> : les mêmes embeddings servent au RAG (PRJ-04), à la déduplication sémantique des pièces MRO (PRJ-01) et à la classification hiérarchique des actifs (PRJ-11).</li>
+</ul>
+<h3>2.4 Vector store (index)</h3>
+<p>Les vecteurs sont stockés dans une base spécialisée qui permet la recherche par similarité rapide (HNSW).</p>
+<ul>
+<li><strong>Choix</strong> : Qdrant, pgvector (embarqué ou dédié).</li>
+<li><strong>Critère</strong> : faible latence, filtres de métadonnées (version du document, site, équipement) indispensables en environnement validé.</li>
+</ul>
+<h3>2.5 Retrieval hybride (dense + BM25)</h3>
+<p>La recherche <strong>lexicale (BM25)</strong> trouve les termes exacts (codes, références) ; la recherche <strong>dense (vectorielle)</strong> trouve les synonymes et reformulations. L'hybride combine les deux et améliore nettement le rappel.</p>
+<ul>
+<li><strong>Pourquoi</strong> : « comment régler le capteur de fin de course » doit retrouver « détection position fin de course » même sans mot commun exact.</li>
+</ul>
+<h3>2.6 Reranking (re-classement)</h3>
+<p>Après la récupération d'un top-k de candidats, un <strong>cross-encoder</strong> re-classe les résultats par pertinence fine. C'est ce qui fait passer le bon paragraphe en tête et réduit les hallucinations.</p>
+<ul>
+<li><strong>Modèles</strong> : bge-reranker, cross-encoder léger.</li>
+</ul>
+<h3>2.7 Génération &amp; citation</h3>
+<p>Le LLM reçoit la question + les chunks retenus, et doit répondre <strong>uniquement à partir de ce contexte</strong>, en citant le paragraphe d'origine.</p>
+<ul>
+<li><strong>Prompt de cadrage strict</strong> : interdiction d'extrapoler ; « si l'information n'est pas dans le contexte, dis-le ».</li>
+<li><strong>Citation obligatoire</strong> : chaque réponse cite la source (document, section, version).</li>
+</ul>
+<h3>2.8 Garde-fous anti-hallucination</h3>
+<ul>
+<li><strong>Règles métier bloquantes</strong> : seuils critiques (températures, pressions, couples) vérifiés avant restitution.</li>
+<li><strong>Validation humaine</strong> : aucune décision autonome — l'assistant propose, l'expert valide.</li>
+<li><strong>Vérification de citation</strong> : contrôle que chaque affirmation renvoie à un passage existant.</li>
+</ul>
+<h2>3. Niveaux de maturité RAG</h2>
+<ol>
+<li><strong>RAG naïf</strong> : retrieval + génération simple. Suffisant pour un prototype.</li>
+<li><strong>RAG avancé</strong> : réécriture de requête, retrieval hybride + reranking, chunking hiérarchique, filtres de métadonnées. C'est notre niveau de base en production.</li>
+<li><strong>RAG agentique</strong> : le modèle peut appeler des outils (rechercher, requêter la GMAO, extraire une table) en plusieurs étapes. Réservé aux cas complexes (diagnostic, CAPA).</li>
+</ol>
+<p><strong>RAG vs fine-tuning</strong> : le fine-tuning apprend un style, pas des faits. Pour une base documentaire qui évolue (SOP versionnées), le <strong>RAG est le bon choix</strong> — la mise à jour du corpus met à jour les réponses sans ré-entraînement.</p>
+<h2>4. Évaluer un RAG</h2>
+<ul>
+<li><strong>Récupération</strong> : recall@k, MRR, nDCG — le bon passage est-il retrouvé ?</li>
+<li><strong>Génération</strong> : fidélité (la réponse colle-t-elle au contexte ?), pertinence, taux de citation.</li>
+<li><strong>Anti-hallucination</strong> : sur un jeu de questions pièges, zéro réponse inventée.</li>
+</ul>
+<p>Un corpus de <strong>questions pièges signées par l'expert métier</strong> est notre baromètre de validation (cf. PRJ-04).</p>
+<h2>5. Déploiement souverain &amp; matériel</h2>
+<p>Le RAG industriel se déploie <strong>en local ou cloud privé qualifié</strong> :</p>
+<table>
+<thead>
+<tr>
+<th>Palier</th>
+<th>Configuration</th>
+<th>Usage</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Tier 0 — PoV</td>
+<td>1 GPU 16 Go · 32 Go RAM · 500 Go NVMe</td>
+<td>1 site, &lt; 100 SOP</td>
+</tr>
+<tr>
+<td>Tier 1 — Prod</td>
+<td>1 GPU 24 Go · 64 Go RAM · 1 To NVMe</td>
+<td>1 site, + transcription vocale</td>
+</tr>
+<tr>
+<td>Tier 2 — Multi-sites</td>
+<td>1–2 GPU 48 Go · 128 Go RAM · 2 To NVMe</td>
+<td>LLM 13B–70B, haute dispo</td>
+</tr>
+</tbody>
+</table>
+<p>Embeddings et reranker tournent sur CPU ; le LLM (7B–13B quantifié) et Whisper (voix) consomment la VRAM GPU.</p>
+<h2>6. Cartographie RAG ↔ 11 projets</h2>
+<p>Tous les projets ne sont pas du RAG génératif : certains utilisent le <strong>même socle vectoriel/NLP</strong> sans génération.</p>
+<table>
+<thead>
+<tr>
+<th>Projet</th>
+<th>Brique(s) RAG/NLP utilisée(s)</th>
+<th>Nature</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01 — MRO</td>
+<td>Embeddings + similarité cosinus (L2)</td>
+<td>Socle vectoriel (pas de génération)</td>
+</tr>
+<tr>
+<td>02 — Causes racines</td>
+<td>NER + classification multi-labels</td>
+<td>NLP supervisé</td>
+</tr>
+<tr>
+<td>03 — Intervalles préventif</td>
+<td>(aucune — fiabilité Weibull)</td>
+<td>Statistique</td>
+</tr>
+<tr>
+<td>04 — Assistant SOP/GMP</td>
+<td><strong>RAG complet</strong> : parsing, chunking, hybride, reranking, citation, garde-fous</td>
+<td>RAG génératif</td>
+</tr>
+<tr>
+<td>05 — HVAC prédictif</td>
+<td>(aucune — séries temporelles)</td>
+<td>Détection d'anomalies</td>
+</tr>
+<tr>
+<td>06 — Arrêts STO</td>
+<td>(aucune — graphes + Monte-Carlo)</td>
+<td>Optimisation</td>
+</tr>
+<tr>
+<td>07 — CAPA / déviations</td>
+<td>RAG contextuel + LLM (chronologie, arbre des causes)</td>
+<td>RAG + génération assistée</td>
+</tr>
+<tr>
+<td>08 — Obsolescence CAPEX</td>
+<td>(aucune — modèle multicritère)</td>
+<td>Scoring</td>
+</tr>
+<tr>
+<td>09 — Dispatching OT</td>
+<td>(aucune — solveur sous contraintes)</td>
+<td>Optimisation</td>
+</tr>
+<tr>
+<td>10 — Énergie</td>
+<td>(aucune — séries temporelles)</td>
+<td>Détection d'anomalies</td>
+</tr>
+<tr>
+<td>11 — Master Data</td>
+<td>Embeddings + classification hiérarchique</td>
+<td>NLP supervisé</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Lecture</strong> : le RAG génératif est au cœur de <strong>PRJ-04</strong> et <strong>PRJ-07</strong> (et de l'offre « Assistant d'atelier ») ; les embeddings sont un <strong>socle réutilisable</strong> par PRJ-01, PRJ-02, PRJ-04 et PRJ-11.</p>
+<h2>7. Bonnes pratiques &amp; pièges</h2>
+<ul>
+<li><strong>Valider l'OCR sur les paramètres critiques</strong> avant toute indexation.</li>
+<li><strong>Versionner le corpus</strong> : en GMP, répondre à partir d'une SOP périmée est une non-conformité.</li>
+<li><strong>Filtrer par métadonnées</strong> (site, équipement, version) plutôt que de tout mélanger.</li>
+<li><strong>Toujours citer</strong> et <strong>toujours soumettre à validation humaine</strong> les réponses critiques.</li>
+<li><strong>Ne pas surdimensionner le LLM</strong> : un 7B–13B quantifié, bien ancré par RAG, suffit souvent.</li>
+</ul>
+<h2>8. Mini-glossaire RAG</h2>
+<ul>
+<li><strong>BM25</strong> : fonction de scoring de recherche lexicale.</li>
+<li><strong>Chunking</strong> : découpage d'un document en segments sémantiques.</li>
+<li><strong>Embedding</strong> : représentation vectorielle du texte.</li>
+<li><strong>Hybride</strong> : combinaison recherche lexicale + vectorielle.</li>
+<li><strong>LLM</strong> : grand modèle de langage.</li>
+<li><strong>NER</strong> : reconnaissance d'entités nommées.</li>
+<li><strong>RAG</strong> : génération augmentée par récupération.</li>
+<li><strong>Reranking</strong> : re-classement des résultats par pertinence.</li>
+<li><strong>Vector store</strong> : base de données de vecteurs.</li>
+<li><strong>Whisper</strong> : modèle de transcription audio on-premise.</li>
+</ul>
+
+</main>
+<footer class="site-footer">
+  <div class="wrap">
+    <p>Helveticore — smartmaintenance.helveticore.com · <a href="mailto:contact@helveticore.com">contact@helveticore.com</a></p>
+  </div>
+</footer>
+</body>
+</html>

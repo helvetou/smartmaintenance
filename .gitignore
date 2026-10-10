@@ -1,0 +1,7 @@
+# Agent Codewhale
+.codewhale/
+
+# OS
+.DS_Store
+Thumbs.db
+*.log
